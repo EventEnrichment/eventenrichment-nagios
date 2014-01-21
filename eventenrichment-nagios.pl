@@ -5,7 +5,7 @@
 #
 # Event Enrichment.Org. <info@eventenrichment.org>
 # Special Thanks to PagerDuty for the initial implementation of the Nagios => PagerDuty connector
-
+# and for their providing use of this codebase.
 
 
 use Pod::Usage;
