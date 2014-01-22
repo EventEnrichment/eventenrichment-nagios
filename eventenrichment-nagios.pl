@@ -1,11 +1,32 @@
 #!/usr/bin/env perl
 
 
-# Nagios plugin that sends Nagios events to the Event Enrichment service 
+# Nagios plugin that sends Nagios events to EventEnrichment.
 #
-# Event Enrichment.Org. <info@eventenrichment.org>
-# Special Thanks to PagerDuty for the initial implementation of the Nagios => PagerDuty connector
-# and for their providing use of this codebase.
+# Copyright (c) 2011, PagerDuty, Inc. <info@pagerduty.com>
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+# * Redistributions of source code must retain the above copyright
+# notice, this list of conditions and the following disclaimer.
+# * Redistributions in binary form must reproduce the above copyright
+# notice, this list of conditions and the following disclaimer in the
+# documentation and/or other materials provided with the distribution.
+# * Neither the name of PagerDuty Inc nor the
+# names of its contributors may be used to endorse or promote products
+# derived from this software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+# ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+# WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL EVENTENRICHMENT INC BE LIABLE FOR ANY
+# DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+# (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+# LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+# ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+# (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+# SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
 use Pod::Usage;
@@ -16,48 +37,47 @@ use HTTP::Status qw(is_client_error);
 use LWP::UserAgent;
 use File::Path;
 use Fcntl qw(:flock);
-use JSON qw( decode_json );
 use POSIX 'strftime';
 
 
 
 =head1 NAME
 
-eventenrichment_nagios -- Send Nagios events to the Eventenrichment alert system
+eventenrichment -- Send Nagios events to the Event Enrichment Platform
 
 =head1 SYNOPSIS
 
-eventenrichment_nagios enqueue [options]
+eventenrichment_nagios.pl enqueue [options]
 
-eventenrichment_nagios flush [options]
+eventenrichment_nagios.pl flush [options]
 
 =head1 DESCRIPTION
 
-This script passes events from Nagios to the Eventenrichment alert system. It's
+This script passes events from Nagios to the Event Enrichment alert system. It's
 meant to be run as a Nagios notification plugin. For more details, please see
-the Eventenrichment Nagios integration docs at:
+the Event Enrichment Nagios integration docs at:
 http://www.eventenrichment.com/docs/nagios-integration.
 
 When called in the "enqueue" mode, the script loads a Nagios notification out
 of the environment and into the event queue. It then tries to flush the
-queue by sending any enqueued events to the Eventenrichment server. The script is
+queue by sending any enqueued events to the Event Enrichment server. The script is
 typically invoked in this mode from a Nagios notification handler.
 
 When called in the "flush" mode, the script simply tries to send any enqueued
-events to the Eventenrichment server. This mode is typically invoked by cron. The
+events to the Event Enrichment server. This mode is typically invoked by cron. The
 purpose of this mode is to retry any events that couldn't be sent to the
-Eventenrichment server for whatever reason when they were initially enqueued.
+Event Enrichment server for whatever reason when they were initially enqueued.
 
 =head1 OPTIONS
 
 --api-base URL
-The base URL used to communicate with Eventenrichment. The default option here
+The base URL used to communicate with Event Enrichment. The default option here
 should be fine, but adjusting it may make sense if your firewall doesn't
-pass HTTPS traffic for some reason. See the Eventenrichment Nagios integration
+pass HTTPS traffic for some reason. See the Event Enrichment Nagios integration
 docs for details.
 
 --field KEY=VALUE
-Add this key-value pair to the event being passed to Eventenrichment. The script
+Add this key-value pair to the event being passed to Event Enrichment. The script
 automatically gathers Nagios macros out of the environment, so there's no
 need to specify these explicitly. This option can be repeated as many
 times as necessary to pass multiple key-value pairs. This option is only
@@ -148,21 +168,37 @@ sub flush_queue {
                 }
 
                 my $resp = $ua->request($req);
-				my $resp_cont = decode_json($resp->decoded_content());
+				
+				my $resp_cont = $resp->decoded_content();
+				my @event_response = split (/\{/, $resp_cont) ;
 
+				my $event_status = $event_response[1] ;
+				my $event_message = $event_response[2] ;
+				
+				if($event_message){
+					$event_status =~ s/[^\w]//g;
+					$event_message = (split (/\:/, $event_message))[1] ;
+					$event_message =~ s/\"\,\".*/\"/g ;
+				}else{
+					($event_status, $event_message) = (split (/\,/, $event_status)) ;
+					$event_status =~ s/\"//g;
+					$event_message =~ s/\"messages\"\s*\:/\"/g ;
+				}
+				$opt_verbose = 1 ;
                 if ($opt_verbose) {
                         my $s = $resp->as_string;
                         print STDERR "Response:\n$s\n";
                 }
 
-                if (exists($resp_cont->{'ok'})) {
-                        syslog(LOG_INFO, "Nagios event in file %s ACCEPTED by the Eventenrichment server.", $filename);
-						printf "Nagios event in file %s ACCEPTED by the Eventenrichment server.", $filename if ($opt_verbose);
+                if (uc($event_status) eq "OK") {
+				
+                        syslog(LOG_INFO, "Nagios event in file %s ACCEPTED by the Event Enrichment server.", $filename);
+						printf "Nagios event in file %s ACCEPTED by the Event Enrichment server.", $filename if ($opt_verbose);
                         #unlink($filename);
                 }
-                elsif (is_client_error($resp_cont->{'status'})) {
-                        syslog(LOG_WARNING, "Nagios event in file %s REJECTED by the Eventenrichment server. Server says: %s", $filename, $resp_cont->{'messages'});
-						printf "Nagios event in file %s REJECTED by the Eventenrichment server. Server says: %s", $filename, $resp_cont->{'messages'} if ($opt_verbose) ;
+                elsif ($event_status =~ /^status/i) {
+                        syslog(LOG_WARNING, "Nagios event in file %s REJECTED by the Event Enrichment server. Server says: %s", $filename, $event_message);
+						printf "Nagios event in file %s REJECTED by the Event Enrichment server. Server says: %s", $filename, $event_message if ($opt_verbose) ;
 						#unlink($filename);
                 }
                 else {
@@ -247,8 +283,8 @@ sub map_Convert_NewFormat {
 	%new_mappings = (	'EE_VERSION' => 'version',
 						'SERVICEEVENTID' => 'local_instance_id',
 						'HOSTEVENTID' => 'local_instance_id',
-						'SERVICEDURATIONSEC' => 'elapsed_time',
-						'HOSTDURATIONSEC' => 'elapsed_time',
+						#'SERVICEDURATIONSEC' => 'elapsed_time',
+						#'HOSTDURATIONSEC' => 'elapsed_time',
 						'LASTSERVICESTATECHANGE' => 'creation_time',
 						'LASTHOSTSTATECHANGE' => 'creation_time',
 						'SERVICESTATEID' => 'severity',
@@ -299,8 +335,8 @@ sub map_Convert_NewFormat {
     }
 
 	$json_string =~ s/\,$//g;
-	$json_string = '{"event":{'.$json_string.'}}';
-
+	$json_string = '{"api_key":"ApiKey1", "event":{'.$json_string.'}}';
+	
 	return $json_string ;
 
 }
@@ -314,6 +350,8 @@ GetOptions("api-base=s" => \$opt_api_base,
                  "queue-dir=s" => \$opt_queue_dir,
                  "verbose" => \$opt_verbose
                  ) || pod2usage(2);
+
+$ARGV[0] = "flush";
 
 
 pod2usage(2) if @ARGV < 1 ||
@@ -337,29 +375,4 @@ if ($ARGV[0] eq "enqueue") {
 elsif ($ARGV[0] eq "flush") {
         lock_and_flush_queue();
 }
-
-# Copyright (c) 2011, PagerDuty, Inc. <info@pagerduty.com>
-# All rights reserved.
-#
-# Redistribution and use in source and binary forms, with or without
-# modification, are permitted provided that the following conditions are met:
-# * Redistributions of source code must retain the above copyright
-# notice, this list of conditions and the following disclaimer.
-# * Redistributions in binary form must reproduce the above copyright
-# notice, this list of conditions and the following disclaimer in the
-# documentation and/or other materials provided with the distribution.
-# * Neither the name of Eventenrichment Inc nor the
-# names of its contributors may be used to endorse or promote products
-# derived from this software without specific prior written permission.
-#
-# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
-# ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
-# WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-# DISCLAIMED. IN NO EVENT SHALL PAGERDUTY INC BE LIABLE FOR ANY
-# DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
-# (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
-# LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
-# ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-# (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
-# SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
