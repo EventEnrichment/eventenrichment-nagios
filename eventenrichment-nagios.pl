@@ -1,32 +1,12 @@
 #!/usr/bin/env perl
 
-
-# Nagios plugin that sends Nagios events to EventEnrichment.
+# Nagios plugin that sends Nagios events to the Event Enrichment Platform (EEP)
 #
-# Copyright (c) 2011, PagerDuty, Inc. <info@pagerduty.com>
-# All rights reserved.
+# Event Enrichment.Org. <info@eventenrichment.org>
+# Special Thanks to PagerDuty for the initial implementation of the Nagios => PagerDuty connector
+# and for their providing use of this codebase.
 #
-# Redistribution and use in source and binary forms, with or without
-# modification, are permitted provided that the following conditions are met:
-# * Redistributions of source code must retain the above copyright
-# notice, this list of conditions and the following disclaimer.
-# * Redistributions in binary form must reproduce the above copyright
-# notice, this list of conditions and the following disclaimer in the
-# documentation and/or other materials provided with the distribution.
-# * Neither the name of PagerDuty Inc nor the
-# names of its contributors may be used to endorse or promote products
-# derived from this software without specific prior written permission.
 #
-# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
-# ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
-# WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-# DISCLAIMED. IN NO EVENT SHALL EVENTENRICHMENT INC BE LIABLE FOR ANY
-# DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
-# (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
-# LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
-# ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-# (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
-# SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
 use Pod::Usage;
@@ -43,41 +23,41 @@ use POSIX 'strftime';
 
 =head1 NAME
 
-eventenrichment -- Send Nagios events to the Event Enrichment Platform
+eventenrichment -- Send Nagios events to the EventEnrichment alert system
 
 =head1 SYNOPSIS
 
-eventenrichment_nagios.pl enqueue [options]
+EventEnrichment enqueue [options]
 
-eventenrichment_nagios.pl flush [options]
+EventEnrichment flush [options]
 
 =head1 DESCRIPTION
 
-This script passes events from Nagios to the Event Enrichment alert system. It's
+This script passes events from Nagios to the EventEnrichment alert system. It's
 meant to be run as a Nagios notification plugin. For more details, please see
-the Event Enrichment Nagios integration docs at:
+the EventEnrichment Nagios integration docs at:
 http://www.eventenrichment.com/docs/nagios-integration.
 
 When called in the "enqueue" mode, the script loads a Nagios notification out
 of the environment and into the event queue. It then tries to flush the
-queue by sending any enqueued events to the Event Enrichment server. The script is
+queue by sending any enqueued events to the EventEnrichment server. The script is
 typically invoked in this mode from a Nagios notification handler.
 
 When called in the "flush" mode, the script simply tries to send any enqueued
-events to the Event Enrichment server. This mode is typically invoked by cron. The
+events to the EventEnrichment server. This mode is typically invoked by cron. The
 purpose of this mode is to retry any events that couldn't be sent to the
-Event Enrichment server for whatever reason when they were initially enqueued.
+EventEnrichment server for whatever reason when they were initially enqueued.
 
 =head1 OPTIONS
 
 --api-base URL
-The base URL used to communicate with Event Enrichment. The default option here
+The base URL used to communicate with EventEnrichment. The default option here
 should be fine, but adjusting it may make sense if your firewall doesn't
-pass HTTPS traffic for some reason. See the Event Enrichment Nagios integration
+pass HTTPS traffic for some reason. See the EventEnrichment Nagios integration
 docs for details.
 
 --field KEY=VALUE
-Add this key-value pair to the event being passed to Event Enrichment. The script
+Add this key-value pair to the event being passed to EventEnrichment. The script
 automatically gathers Nagios macros out of the environment, so there's no
 need to specify these explicitly. This option can be repeated as many
 times as necessary to pass multiple key-value pairs. This option is only
@@ -100,7 +80,7 @@ Turn on extra debugging information. Useful for debugging.
 # Ubuntu 9.04 (Perl 5.10.0)
 
 
-my $opt_api_base = "http://eb-server.eventenrichment.org:3000/api/events";
+my $opt_api_base = "http://eb-server.eventenrichment.org:3000/api";
 my %opt_fields;
 my $opt_help;
 my $opt_queue_dir = "/tmp/eventenrichment_nagios";
@@ -130,11 +110,7 @@ sub get_queue_from_dir {
 
 sub flush_queue {
         my @files = get_queue_from_dir();
-        my $ua = LWP::UserAgent->new;
-
-        # It's not a big deal if we don't get the message through the first time.
-        # It will get sent the next time cron fires.
-        $ua->timeout(15);
+       
 
         foreach (@files) {
                 my $filename = "$opt_queue_dir/$_";
@@ -156,56 +132,11 @@ sub flush_queue {
 
                 close($fd);
 
-				my $data = map_Convert_NewFormat(\%event);
+				my ($type, $data) = map_Convert_NewFormat(\%event);
+				
+				&post_url($type, $data);
                
-				my $req = HTTP::Request->new( 'POST', $opt_api_base );
-				$req->header( 'Content-Type' => 'text/json' );
-				$req->content( $data );
-	
-                if ($opt_verbose) {
-                        my $s = $req->as_string;
-                        print STDERR "Request:\n$s\n";
-                }
-
-                my $resp = $ua->request($req);
 				
-				my $resp_cont = $resp->decoded_content();
-				my @event_response = split (/\{/, $resp_cont) ;
-
-				my $event_status = $event_response[1] ;
-				my $event_message = $event_response[2] ;
-				
-				if($event_message){
-					$event_status =~ s/[^\w]//g;
-					$event_message = (split (/\:/, $event_message))[1] ;
-					$event_message =~ s/\"\,\".*/\"/g ;
-				}else{
-					($event_status, $event_message) = (split (/\,/, $event_status)) ;
-					$event_status =~ s/\"//g;
-					$event_message =~ s/\"messages\"\s*\:/\"/g ;
-				}
-				$opt_verbose = 1 ;
-                if ($opt_verbose) {
-                        my $s = $resp->as_string;
-                        print STDERR "Response:\n$s\n";
-                }
-
-                if (uc($event_status) eq "OK") {
-				
-                        syslog(LOG_INFO, "Nagios event in file %s ACCEPTED by the Event Enrichment server.", $filename);
-						printf "Nagios event in file %s ACCEPTED by the Event Enrichment server.", $filename if ($opt_verbose);
-                        #unlink($filename);
-                }
-                elsif ($event_status =~ /^status/i) {
-                        syslog(LOG_WARNING, "Nagios event in file %s REJECTED by the Event Enrichment server. Server says: %s", $filename, $event_message);
-						printf "Nagios event in file %s REJECTED by the Event Enrichment server. Server says: %s", $filename, $event_message if ($opt_verbose) ;
-						#unlink($filename);
-                }
-                else {
-                        # Something else went wrong.
-                        syslog(LOG_WARNING, "Nagios event in file %s DEFERRED due to network/server problems.", $filename);
-                        return 0;
-                }
         }
 
         # Everything that needed to be sent was sent.
@@ -279,6 +210,8 @@ sub map_Convert_NewFormat {
 
 	my $old_format_events = shift ;
 	my $json_string = '' ;
+	my $clear_flag = 0 ;
+	my ($local_instance_id, $source_location, $event_url);
 
 	%new_mappings = (	'EE_VERSION' => 'version',
 						'SERVICEEVENTID' => 'local_instance_id',
@@ -305,40 +238,124 @@ sub map_Convert_NewFormat {
 						#'CONTACTPAGER' => 'ee_api_token',
 		) ;
 
-	my %service_Severity = ( 0 => 'ok', 1 => 'warning', 2 => 'critical', 3 => 'unknown');
-	my %host_Severity = ( 0 => 'up', 1 => 'down', 2 => 'unreachable');
+		my %service_Severity = ( 0 => 'clear', 1 => 'warning', 2 => 'critical', 3 => 'info');
+		my %host_Severity = ( 0 => 'clear', 1 => 'critical', 2 => 'critical');
 
 
-	while ((my $key, my $val) = each %{$old_format_events}) {
+		while ((my $key, my $val) = each %{$old_format_events}) {
 
-		if((exists($new_mappings{uc($key)})) && ($val)){
+			if((exists($new_mappings{uc($key)})) && ($val ne "")){
 
-			if($new_mappings{uc($key)} eq "creation_time"){
-				$val = strftime('%Y-%m-%dT%H:%M:%SZ', localtime($val));
-			}
+				if($new_mappings{uc($key)} eq "creation_time"){
+					$val = strftime('%Y-%m-%dT%H:%M:%SZ', localtime($val));
+				}
+				
+				
+				if((uc($key) eq "SERVICESTATEID") && (exists($service_Severity{$val}))){
+					$val = $service_Severity{$val};
+					$clear_flag = 1 if($val  eq "clear");
+				}
 
-			#if($new_mappings{uc($key)} eq "elapsed_time"){
-			#	$val = '';
-			#}
-
-			if((uc($key) eq "SERVICESTATEID") && (exists($service_Severity{$val}))){
-				$val = $service_Severity{$val};
-			}
-
-			if((uc($key) eq "HOSTSTATEID") && (exists($host_Severity{$val}))){
-				$val = $host_Severity{$val};
-			}
-			
-			$json_string .= '"'.$new_mappings{uc($key)}.'":"'.$val.'",' ;
-		}
-                
-    }
-
-	$json_string =~ s/\,$//g;
-	$json_string = '{"api_key":"ApiKey1", "event":{'.$json_string.'}}';
+				if((uc($key) eq "HOSTSTATEID") && (exists($host_Severity{$val}))){
+					$val = $host_Severity{$val};
+					$clear_flag = 1 if($val  eq "clear");
+				}
+		
+				$local_instance_id = $val if($key =~ /(SERVICE|HOST)EVENTID/i);
+				$source_location = $val if(uc($key) eq "HOSTADDRESS");
 	
-	return $json_string ;
+				$json_string .= '"'.$new_mappings{uc($key)}.'":"'.$val.'",' ;
+			}
+					
+		}
+	
+	$json_string =~ s/\,$//g;
+	
+	if($clear_flag){
+		$json_string = '';
+		if(($local_instance_id) && ($source_location)){
+			$json_string = '{"api_key":"ApiKey1","clear":{"local_instance_id":"'.$local_instance_id.'","source_location":"'.$source_location.'"}}' ;
+			
+			$event_url = "clear" ;
+		}else{
+			syslog(LOG_INFO, "'local_instance_id' and 'source_location' REQUIRED for 'CLEAR' event");
+			printf "'local_instance_id' and 'source_location' REQUIRED for 'CLEAR' event" if ($opt_verbose);
+			return 0;
+		}
+	}else{
 
+		$json_string = '{"api_key":"ApiKey1", "event":{'.$json_string.'}}';
+		
+		$event_url = "event" ;
+	}
+
+	return ($event_url, $json_string) ;
+
+}
+
+
+
+sub post_url{
+
+	my($url, $data) = @_ ;
+
+	my $ua = LWP::UserAgent->new;
+
+	# It's not a big deal if we don't get the message through the first time.
+	# It will get sent the next time cron fires.
+	$ua->timeout(15);
+
+	my $req = HTTP::Request->new( 'POST', "$opt_api_base/$url" );
+	
+	$req->header( 'Content-Type' => 'text/json' );
+	$req->content( $data );
+
+	if ($opt_verbose) {
+			my $s = $req->as_string;
+			print STDERR "Request:\n$s\n";
+	}
+
+	my $resp = $ua->request($req);
+	
+	my $resp_cont = $resp->decoded_content();
+	my @event_response = split (/\{/, $resp_cont) ;
+
+	my $event_status = $event_response[1] ;
+	my $event_message = $event_response[2] ;
+	
+	if($event_message){
+		$event_status =~ s/[^\w]//g;
+		$event_message = (split (/\:/, $event_message))[1] ;
+		$event_message =~ s/\"\,\".*/\"/g ;
+	}else{
+		($event_status, $event_message) = (split (/\,/, $event_status)) ;
+		$event_status =~ s/\"//g;
+		$event_message =~ s/\"messages\"\s*\:/\"/g ;
+	}
+	
+
+	if ($opt_verbose) {
+			my $s = $resp->as_string;
+			print STDERR "Response:\n$s\n";
+	}
+
+	if (uc($event_status) eq "OK") {
+	
+			syslog(LOG_INFO, "Nagios event in file %s ACCEPTED by the EventEnrichment server.", $filename);
+			printf "Nagios event in file %s ACCEPTED by the EventEnrichment server.", $filename if ($opt_verbose);
+			#unlink($filename);
+	}
+	elsif ($event_status =~ /^status/i) {
+			syslog(LOG_WARNING, "Nagios event in file %s REJECTED by the EventEnrichment server. Server says: %s", $filename, $event_message);
+			printf "Nagios event in file %s REJECTED by the EventEnrichment server. Server says: %s", $filename, $event_message if ($opt_verbose) ;
+			#unlink($filename);
+	}
+	else {
+			# Something else went wrong.
+			syslog(LOG_WARNING, "Nagios event in file %s DEFERRED due to network/server problems.", $filename);
+			return 0;
+	}
+	return 1;
 }
 
 
@@ -350,8 +367,6 @@ GetOptions("api-base=s" => \$opt_api_base,
                  "queue-dir=s" => \$opt_queue_dir,
                  "verbose" => \$opt_verbose
                  ) || pod2usage(2);
-
-$ARGV[0] = "flush";
 
 
 pod2usage(2) if @ARGV < 1 ||
@@ -376,3 +391,28 @@ elsif ($ARGV[0] eq "flush") {
         lock_and_flush_queue();
 }
 
+
+# Copyright (c) 2011, PagerDuty, Inc. <info@pagerduty.com>
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+# * Redistributions of source code must retain the above copyright
+# notice, this list of conditions and the following disclaimer.
+# * Redistributions in binary form must reproduce the above copyright
+# notice, this list of conditions and the following disclaimer in the
+# documentation and/or other materials provided with the distribution.
+# * Neither the name of EventEnrichment Inc nor the
+# names of its contributors may be used to endorse or promote products
+# derived from this software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+# ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+# WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL EVENTENRICHMENT INC BE LIABLE FOR ANY
+# DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+# (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+# LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+# ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+# (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+# SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
