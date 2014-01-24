@@ -5,8 +5,6 @@
 # Event Enrichment.Org. <info@eventenrichment.org>
 # Special Thanks to PagerDuty for the initial implementation of the Nagios => PagerDuty connector
 # and for their providing use of this codebase.
-#
-#
 
 
 use Pod::Usage;
@@ -86,7 +84,6 @@ my $opt_help;
 my $opt_queue_dir = "/tmp/eventenrichment_nagios";
 my $opt_verbose;
 
-
 sub get_queue_from_dir {
         my $dh;
 
@@ -134,7 +131,7 @@ sub flush_queue {
 
 				my ($type, $data) = map_Convert_NewFormat(\%event);
 				
-				&post_url($type, $data);
+				&post_url($type, $filename,$data);
                
 				
         }
@@ -244,10 +241,13 @@ sub map_Convert_NewFormat {
 
 		while ((my $key, my $val) = each %{$old_format_events}) {
 
-			if((exists($new_mappings{uc($key)})) && ($val ne "")){
+			if(exists($new_mappings{uc($key)})){
 
 				if($new_mappings{uc($key)} eq "creation_time"){
 					$val = strftime('%Y-%m-%dT%H:%M:%SZ', localtime($val));
+					### To fill default value for blank creation time.
+					$val = strftime('%Y-%m-%dT%H:%M:%SZ', localtime(time)) if(!$val);
+
 				}
 				
 				
@@ -263,6 +263,10 @@ sub map_Convert_NewFormat {
 		
 				$local_instance_id = $val if($key =~ /(SERVICE|HOST)EVENTID/i);
 				$source_location = $val if(uc($key) eq "HOSTADDRESS");
+
+				### To fill default value for blank required fields.
+				$val = "BLANK" if((!$val) && (($new_mappings{uc($key)} eq "local_instance_id")||($new_mappings{uc($key)} eq "source_component")||($new_mappings{uc($key)} eq "event_class")||($new_mappings{uc($key)} eq "source_location")));
+
 	
 				$json_string .= '"'.$new_mappings{uc($key)}.'":"'.$val.'",' ;
 			}
@@ -297,7 +301,7 @@ sub map_Convert_NewFormat {
 
 sub post_url{
 
-	my($url, $data) = @_ ;
+	my($url, $filename, $data) = @_ ;
 
 	my $ua = LWP::UserAgent->new;
 
@@ -343,12 +347,12 @@ sub post_url{
 	
 			syslog(LOG_INFO, "Nagios event in file %s ACCEPTED by the EventEnrichment server.", $filename);
 			printf "Nagios event in file %s ACCEPTED by the EventEnrichment server.", $filename if ($opt_verbose);
-			#unlink($filename);
+			unlink($filename) if (!$opt_verbose);
 	}
 	elsif ($event_status =~ /^status/i) {
 			syslog(LOG_WARNING, "Nagios event in file %s REJECTED by the EventEnrichment server. Server says: %s", $filename, $event_message);
 			printf "Nagios event in file %s REJECTED by the EventEnrichment server. Server says: %s", $filename, $event_message if ($opt_verbose) ;
-			#unlink($filename);
+			unlink($filename) if (!$opt_verbose);
 	}
 	else {
 			# Something else went wrong.
@@ -367,7 +371,6 @@ GetOptions("api-base=s" => \$opt_api_base,
                  "queue-dir=s" => \$opt_queue_dir,
                  "verbose" => \$opt_verbose
                  ) || pod2usage(2);
-
 
 pod2usage(2) if @ARGV < 1 ||
          (($ARGV[0] ne "enqueue") && ($ARGV[0] ne "flush"));
